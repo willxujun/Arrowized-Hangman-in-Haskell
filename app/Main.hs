@@ -94,17 +94,40 @@ livesLeft hung = "Lives: [" ++ replicate (attempts - hung) '#'
 hangman :: StdGen -> Circuit String (Bool, [String])
 hangman rng = proc input -> do
     word <- getWord rng -< ()
+    status <- updateStatus -< input
+
     let letter = listToMaybe input
-    guessed <- updateGuess -< (word, letter)
-    hung <- updateHung -< (word, letter)
+
+    guessed <- if not (isCommand input) && status == 1
+               then updateGuess -< (word, letter)
+               else returnA -< []
+    hung <- if not (isCommand input) && status == 1
+            then updateHung -< (word, letter)
+            else returnA -< -1
+
     hasNotEnded <- delayedEcho True -< not (word == guessed || hung >= attempts)
-    let result = if word == guessed
-                 then [guessed, "you won."]
-                 else if hung >= attempts
-                      then [guessed, livesLeft hung, "You died."]
-                      else [guessed, livesLeft hung]
+    let result = if isCommand input || status == 0
+                 then (if input == "continue" then ["ok continue"] else ["pausing..."])
+                 else if word == guessed
+                      then [guessed, "you won."]
+                      else if hung >= attempts
+                           then [guessed, livesLeft hung, "You died."]
+                           else [guessed, livesLeft hung]
     returnA -< (hasNotEnded, result)
   where
+    isCommand "pause" = True
+    isCommand "continue" = True
+    isCommand _ = False
+
+    updateStatus :: Circuit String Int
+    updateStatus = accum' 0 $ \str curr ->
+      case str of
+        --is keyword
+        "pause" -> 0
+        "continue" -> 1
+        --is other stuff
+        _ -> curr
+
     updateGuess :: Circuit (String, Maybe Char) String
     updateGuess = accum' (repeat '_') $ \(word, maybeLetter) currentGuess ->
       case maybeLetter of
@@ -120,24 +143,12 @@ hangman rng = proc input -> do
 pause :: Circuit String (Bool, [String])
 pause = Circuit $ \_ -> (pause, (True, ["paused"]))
 
-tag ls =
-  let
-    aux acc [] = []
-    aux acc (x:xs) =
-        case x of
-          "0" -> Right x: aux Right xs
-          "1" -> Right x: aux Left xs
-          _ -> acc x : aux acc xs
-  in aux Left ls
-
-
 main :: IO ()
 main = do
   rng <- getStdGen
   interact $ unlines
-    . (:) "Welcome to Arrow Hangman. Press 1 to start/resume and 0 to pause."
+    . (:) "Welcome to Arrow Hangman. type \"continue\" to start/resume and \"pause\" to pause."
     . concatMap snd . takeWhile fst
-    . runCircuit ((hangman rng) ||| pause)
-    . tag
+    . runCircuit (hangman rng)
     . (:) ""
     . lines
